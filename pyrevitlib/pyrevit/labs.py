@@ -7,12 +7,15 @@ from pyrevit.framework import clr
 from pyrevit import coreutils
 from pyrevit.coreutils import logger
 
+
+mlogger = logger.get_logger(__name__)
+
+
 # try loading pyrevitlabs
 clr.AddReference('Nett')
 clr.AddReference('Nlog')
 clr.AddReference('MadMilkman.Ini')
 clr.AddReference('OpenMcdf')
-clr.AddReference('MahApps.Metro')
 clr.AddReference('pyRevitLabs.Common')
 clr.AddReference('pyRevitLabs.CommonCLI')
 clr.AddReference('pyRevitLabs.Language')
@@ -21,14 +24,18 @@ import Nett
 import NLog
 import MadMilkman.Ini
 import OpenMcdf
-import MahApps.Metro
 from pyRevitLabs import Common
 from pyRevitLabs import CommonCLI
 from pyRevitLabs import Language
 from pyRevitLabs import TargetApps
 
+# activate binding resolver
+if HOST_APP.is_older_than(2019):
+    TargetApps.Revit.PyRevitBindings.ActivateResolver()
 
-mlogger = logger.get_logger(__name__)
+# now import mahapps. Bindings resolver is active now
+clr.AddReference('MahApps.Metro')
+import MahApps.Metro
 
 
 # setup logger
@@ -58,10 +65,6 @@ class PyRevitOutputTarget(NLog.Targets.TargetWithLayout):
         elif nlog_level == NLog.LogLevel.Warn:
             return logging.WARNING
 
-
-# activate binding resolver
-if HOST_APP.is_older_than(2019):
-    TargetApps.Revit.PyRevitBindings.ActivateResolver()
 
 # configure NLog
 #pylint: disable=W0201
