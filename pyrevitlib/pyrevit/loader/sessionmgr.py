@@ -15,6 +15,7 @@ import sys
 from collections import namedtuple
 
 from pyrevit import EXEC_PARAMS, HOST_APP
+from pyrevit import labs
 from pyrevit import coreutils
 from pyrevit.framework import FormatterServices
 from pyrevit.framework import Array

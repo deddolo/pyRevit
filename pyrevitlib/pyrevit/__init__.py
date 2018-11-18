@@ -92,7 +92,6 @@ from pyrevit.framework import Process
 from pyrevit.framework import Windows
 from pyrevit.framework import Forms
 from pyrevit.api import DB, UI
-from pyrevit import labs
 
 # -----------------------------------------------------------------------------
 # Base Exceptions
