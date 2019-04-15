@@ -12,6 +12,7 @@ from collections import OrderedDict
 import threading
 from functools import wraps
 import datetime
+import webbrowser
 
 from pyrevit import HOST_APP, EXEC_PARAMS, BIN_DIR
 from pyrevit.compat import safe_strtype
@@ -24,6 +25,7 @@ from pyrevit.framework import Threading
 from pyrevit.framework import Interop
 from pyrevit.framework import Input
 from pyrevit.framework import wpf, Forms, Controls, Media
+from pyrevit.framework import CPDialogs
 from pyrevit.api import AdWindows
 from pyrevit import revit, UI, DB
 from pyrevit.forms import utils
@@ -134,22 +136,27 @@ class WPFWindow(framework.Windows.Window):
         """Show modal window."""
         return self.ShowDialog()
 
-    def set_image_source(self, element_name, image_file):
+    def set_image_source(self, wpf_element, image_file):
         """Set source file for image element.
 
         Args:
-            element_name (str): xaml image element name
+            element_name (System.Windows.Controls.Image): xaml image element
             image_file (str): image file path
         """
-        wpfel = getattr(self, element_name)
         if not op.exists(image_file):
-            wpfel.Source = \
+            wpf_element.Source = \
                 utils.bitmap_from_file(
                     os.path.join(EXEC_PARAMS.command_path,
                                  image_file)
                     )
         else:
-            wpfel.Source = utils.bitmap_from_file(image_file)
+            wpf_element.Source = utils.bitmap_from_file(image_file)
+
+    @property
+    def pyrevit_version(self):
+        return 'pyRevit {}'.format(
+            versionmgr.get_pyrevit_version().get_formatted()
+            )
 
     @staticmethod
     def hide_element(*wpf_elements):
@@ -204,6 +211,10 @@ class WPFWindow(framework.Windows.Window):
         for wpfel in wpf_elements:
             wpfel.IsEnabled = True
 
+    def handle_url_click(self, sender, args):
+        """Callback for handling click on package website url"""
+        return webbrowser.open_new_tab(sender.NavigateUri.AbsoluteUri)
+
 
 class TemplateUserInputWindow(WPFWindow):
     """Base class for pyRevit user input standard forms.
@@ -229,6 +240,14 @@ class TemplateUserInputWindow(WPFWindow):
 
         self._context = context
         self.response = None
+
+        # parent window?
+        owner = kwargs.get('owner', None)
+        if owner:
+            # set wpf windows directly
+            self.Owner = owner
+            self.WindowStartupLocation = \
+                framework.Windows.WindowStartupLocation.CenterOwner
 
         self._setup(**kwargs)
 
@@ -298,10 +317,6 @@ class TemplateListItem(object):
     def unwrap(self):
         """Unwrap and return wrapped object."""
         return self.item
-
-    def matches(self, filter_str):
-        """Check if instance matches the filter string."""
-        return filter_str in self.name.lower()
 
     @property
     def checkable(self):
@@ -508,9 +523,16 @@ class SelectFromList(TemplateUserInputWindow):
             self.checkall_b.Content = 'Check'
             self.uncheckall_b.Content = 'Uncheck'
             self.toggleall_b.Content = 'Toggle'
-            option_filter = option_filter.lower()
+            # get a match score for every item and sort high to low
+            fuzzy_matches = sorted(
+                [(x, coreutils.fuzzy_search_ratio(x.name, option_filter))
+                 for x in self._get_active_ctx()],
+                key=lambda x: x[1],
+                reverse=True
+                )
+            # filter out any match with score less than 80
             self.list_lb.ItemsSource = \
-                [x for x in self._get_active_ctx() if x.matches(option_filter)]
+                [x[0] for x in fuzzy_matches if x[1] >= 80]
         else:
             self.checkall_b.Content = 'Check All'
             self.uncheckall_b.Content = 'Uncheck All'
@@ -771,36 +793,54 @@ class GetValueWindow(TemplateUserInputWindow):
         self.value_type = kwargs.get('value_type', 'string')
         value_prompt = kwargs.get('prompt', None)
         value_default = kwargs.get('default', None)
+        self.reserved_values = kwargs.get('reserved_values', [])
 
         # customize window based on type
         if self.value_type == 'string':
-            self.show_element(self.string_panel)
-            self.string_tb.Text = value_default if value_default else ''
-            self.string_tb.Focus()
-            self.string_tb.SelectAll()
-            self.string_prompt.Text = \
+            self.show_element(self.stringPanel_dp)
+            self.stringValue_tb.Text = value_default if value_default else ''
+            self.stringValue_tb.Focus()
+            self.stringValue_tb.SelectAll()
+            self.stringPrompt.Text = \
                 value_prompt if value_prompt else 'Enter string:'
+            if self.reserved_values:
+                self.string_value_changed(None, None)
         elif self.value_type == 'dropdown':
-            self.show_element(self.dropdown_panel)
-            self.dropdown_prompt.Text = \
+            self.show_element(self.dropdownPanel_db)
+            self.dropdownPrompt.Text = \
                 value_prompt if value_prompt else 'Pick one value:'
             self.dropdown_cb.ItemsSource = self._context
             if value_default:
                 self.dropdown_cb.SelectedItem = value_default
         elif self.value_type == 'date':
-            self.show_element(self.date_panel)
-            self.date_prompt.Text = \
+            self.show_element(self.datePanel_dp)
+            self.datePrompt.Text = \
                 value_prompt if value_prompt else 'Pick date:'
+
+    def string_value_changed(self, sender, args):
+        filtered_rvalues = \
+            sorted([x for x in self.reserved_values
+                    if self.stringValue_tb.Text in str(x)],
+                   reverse=True)
+        if filtered_rvalues:
+            self.reservedValuesList.ItemsSource = filtered_rvalues
+            self.show_element(self.reservedValuesListPanel)
+            self.okayButton.IsEnabled = \
+                self.stringValue_tb.Text not in filtered_rvalues
+        else:
+            self.reservedValuesList.ItemsSource = []
+            self.hide_element(self.reservedValuesListPanel)
+            self.okayButton.IsEnabled = True
 
     def select(self, sender, args):    #pylint: disable=W0613
         self.Close()
         if self.value_type == 'string':
-            self.response = self.string_tb.Text
+            self.response = self.stringValue_tb.Text
         elif self.value_type == 'dropdown':
             self.response = self.dropdown_cb.SelectedItem
         elif self.value_type == 'date':
-            if self.date_picker.SelectedDate:
-                datestr = self.date_picker.SelectedDate.ToString("MM/dd/yyyy")
+            if self.datePicker.SelectedDate:
+                datestr = self.datePicker.SelectedDate.ToString("MM/dd/yyyy")
                 self.response = datetime.datetime.strptime(datestr, r'%m/%d/%Y')
             else:
                 self.response = None
@@ -1349,7 +1389,8 @@ class ViewOption(TemplateListItem):
     @property
     def name(self):
         """View name."""
-        return '{} ({})'.format(self.item.ViewName, self.item.ViewType)
+        return '{} ({})'.format(revit.query.get_name(self.item),
+                                self.item.ViewType)
 
 
 def select_revisions(title='Select Revision',
@@ -1380,6 +1421,7 @@ def select_revisions(title='Select Revision',
         ... [<Autodesk.Revit.DB.Revision object>,
         ...  <Autodesk.Revit.DB.Revision object>]
     """
+    doc = doc or HOST_APP.doc
     revisions = sorted(revit.query.get_revisions(doc=doc),
                        key=lambda x: x.SequenceNumber)
 
@@ -1496,6 +1538,7 @@ def select_views(title='Select Views',
         ... [<Autodesk.Revit.DB.View object>,
         ...  <Autodesk.Revit.DB.View object>]
     """
+    doc = doc or HOST_APP.doc
     all_graphviews = revit.query.get_all_views(doc=doc)
 
     if filterfunc:
@@ -1512,6 +1555,53 @@ def select_views(title='Select Views',
         )
 
     return selected_views
+
+
+def select_viewtemplates(title='Select View Templates',
+                         button_name='Select',
+                         width=DEFAULT_INPUTWINDOW_WIDTH,
+                         multiple=True,
+                         filterfunc=None,
+                         doc=None):
+    """Standard form for selecting view templates.
+
+    Args:
+        title (str, optional): list window title
+        button_name (str, optional): list window button caption
+        width (int, optional): width of list window
+        multiselect (bool, optional):
+            allow multi-selection (uses check boxes). defaults to True
+        filterfunc (function):
+            filter function to be applied to context items.
+        doc (DB.Document, optional):
+            source document for views; defaults to active document
+
+    Returns:
+        list[DB.View]: list of selected view templates
+
+    Example:
+        >>> from pyrevit import forms
+        >>> forms.select_viewtemplates()
+        ... [<Autodesk.Revit.DB.View object>,
+        ...  <Autodesk.Revit.DB.View object>]
+    """
+    doc = doc or HOST_APP.doc
+    all_viewtemplates = revit.query.get_all_view_templates(doc=doc)
+
+    if filterfunc:
+        all_viewtemplates = filter(filterfunc, all_viewtemplates)
+
+    selected_viewtemplates = SelectFromList.show(
+        sorted([ViewOption(x) for x in all_viewtemplates],
+               key=lambda x: x.name),
+        title=title,
+        button_name=button_name,
+        width=width,
+        multiselect=multiple,
+        checked_only=True
+        )
+
+    return selected_viewtemplates
 
 
 def select_open_docs(title='Select Open Documents',
@@ -1595,7 +1685,7 @@ def select_titleblocks(title='Select Titleblock',
                     .ToElements()
 
     tblock_dict = {'{}: {}'.format(tb.FamilyName,
-                                   revit.ElementWrapper(tb).name): tb.Id
+                                   revit.query.get_name(tb)): tb.Id
                    for tb in titleblocks}
     tblock_dict[no_tb_option] = DB.ElementId.InvalidElementId
     selected_titleblocks = SelectFromList.show(sorted(tblock_dict.keys()),
@@ -1646,7 +1736,7 @@ def select_image(images, title='Select Image', button_name='Select'):
     """Standard form for selecting an image.
 
     Args:
-        images (str | framework.Imaging.BitmapImage):
+        images (list[str] | list[framework.Imaging.BitmapImage]):
             list of image file paths or bitmaps
         title (str, optional): swatch list window title
         button_name (str, optional): swatch list window button caption
@@ -1656,8 +1746,10 @@ def select_image(images, title='Select Image', button_name='Select'):
 
     Example:
         >>> from pyrevit import forms
-        >>> forms.select_image(title="Select Variation")
-        ... c:/path/to/image.png
+        >>> forms.select_image(['C:/path/to/image1.png',
+                                'C:/path/to/image2.png'],
+                                title="Select Variation")
+        ... 'C:/path/to/image1.png'
     """
     ptemplate_xaml_file = \
         os.path.join(op.dirname(__file__), "ImageListPanelStyle.xaml")
@@ -1693,7 +1785,7 @@ def select_image(images, title='Select Image', button_name='Select'):
 
 def alert(msg, title=None, sub_msg=None, expanded=None, footer='',
           ok=True, cancel=False, yes=False, no=False, retry=False,
-          warn_icon=True, exitscript=False):
+          warn_icon=True, options=None, exitscript=False):
     """Show a task dialog with given message.
 
     Args:
@@ -1704,6 +1796,7 @@ def alert(msg, title=None, sub_msg=None, expanded=None, footer='',
         yes (bool, optional): show Yes button, defaults to False
         no (bool, optional): show NO button, defaults to False
         retry (bool, optional): show Retry button, defaults to False
+        options(list[str], optional): list of command link titles in order
         exitscript (bool, optional): exit if cancel or no, defaults to False
 
     Returns:
@@ -1714,44 +1807,82 @@ def alert(msg, title=None, sub_msg=None, expanded=None, footer='',
         >>> forms.alert('Are you sure?',
         ...              ok=False, yes=True, no=True, exitscript=True)
     """
-    buttons = coreutils.get_enum_none(UI.TaskDialogCommonButtons)
-    if yes:
-        buttons |= UI.TaskDialogCommonButtons.Yes
-    elif ok:
-        buttons |= UI.TaskDialogCommonButtons.Ok
-
-    if cancel:
-        buttons |= UI.TaskDialogCommonButtons.Cancel
-    if no:
-        buttons |= UI.TaskDialogCommonButtons.No
-    if retry:
-        buttons |= UI.TaskDialogCommonButtons.Retry
-
+    # BUILD DIALOG
     cmd_name = EXEC_PARAMS.command_name
     if not title:
         title = cmd_name if cmd_name else 'pyRevit'
-
     tdlg = UI.TaskDialog(title)
-    tdlg.CommonButtons = buttons
+
+    options = options or []
+    # add command links if any
+    if options:
+        clinks = coreutils.get_enum_values(UI.TaskDialogCommandLinkId)
+        max_clinks = len(clinks)
+        for idx, cmd in enumerate(options):
+            if idx < max_clinks:
+                tdlg.AddCommandLink(clinks[idx], cmd)
+    # otherwise add buttons
+    else:
+        buttons = coreutils.get_enum_none(UI.TaskDialogCommonButtons)
+        if yes:
+            buttons |= UI.TaskDialogCommonButtons.Yes
+        elif ok:
+            buttons |= UI.TaskDialogCommonButtons.Ok
+
+        if cancel:
+            buttons |= UI.TaskDialogCommonButtons.Cancel
+        if no:
+            buttons |= UI.TaskDialogCommonButtons.No
+        if retry:
+            buttons |= UI.TaskDialogCommonButtons.Retry
+        tdlg.CommonButtons = buttons
+
+    # set texts
     tdlg.MainInstruction = msg
     tdlg.MainContent = sub_msg
     tdlg.ExpandedContent = expanded
     if footer:
-        footer += '\n'
-    tdlg.FooterText = \
-        footer + \
-        'pyRevit {}'.format(versionmgr.get_pyrevit_version().get_formatted())
+        footer = footer.strip() + '\n'
+    tdlg.FooterText = footer + 'pyRevit {}'.format(
+        versionmgr.get_pyrevit_version().get_formatted()
+        )
     tdlg.TitleAutoPrefix = False
+
+    # set icon
     tdlg.MainIcon = \
         UI.TaskDialogIcon.TaskDialogIconWarning \
         if warn_icon else UI.TaskDialogIcon.TaskDialogIconNone
+
     # tdlg.VerificationText = 'verif'
+
+    # SHOW DIALOG
     res = tdlg.Show()
 
+    # PROCESS REPONSES
+    # positive response
     if res == UI.TaskDialogResult.Ok \
             or res == UI.TaskDialogResult.Yes \
             or res == UI.TaskDialogResult.Retry:
-        return True
+        if not exitscript:
+            return True
+        else:
+            sys.exit()
+    # negative response
+    elif res == coreutils.get_enum_none(UI.TaskDialogResult) \
+            or res == UI.TaskDialogResult.Cancel \
+            or res == UI.TaskDialogResult.No:
+        if not exitscript:
+            return False
+        else:
+            sys.exit()
+    # command link response
+    elif 'CommandLink' in str(res):
+        tdresults = sorted(
+            [x for x in coreutils.get_enum_values(UI.TaskDialogResult)
+             if 'CommandLink' in str(x)]
+            )
+        residx = tdresults.index(res)
+        return options[residx]
     else:
         if not exitscript:
             return False
@@ -1795,11 +1926,20 @@ def pick_folder(title=None):
     Returns:
         str: folder path
     """
-    fb_dlg = Forms.FolderBrowserDialog()
-    if title:
-        fb_dlg.Description = title
-    if fb_dlg.ShowDialog() == Forms.DialogResult.OK:
-        return fb_dlg.SelectedPath
+    if CPDialogs:
+        fb_dlg = CPDialogs.CommonOpenFileDialog()
+        fb_dlg.IsFolderPicker = True
+        if title:
+            fb_dlg.Description = title
+        if fb_dlg.ShowDialog() == CPDialogs.CommonFileDialogResult.Ok:
+            return fb_dlg.FileName
+    else:
+        fb_dlg = Forms.FolderBrowserDialog()
+        if title:
+            fb_dlg.Description = title
+        if fb_dlg.ShowDialog() == Forms.DialogResult.OK:
+            return fb_dlg.SelectedPath
+
 
 
 def pick_file(file_ext='', files_filter='', init_dir='',
@@ -2011,33 +2151,49 @@ def toast(message, title='pyRevit', appid='pyRevit',
         actions=actions)
 
 
-def ask_for_string(default=None, prompt=None, title=None):
+def ask_for_string(default=None, prompt=None, title=None, **kwargs):
     return GetValueWindow.show(
         None,
         value_type='string',
         default=default,
         prompt=prompt,
-        title=title
+        title=title,
+        **kwargs
         )
 
 
-def ask_for_one_item(items, default=None, prompt=None, title=None):
+def ask_for_unique_string(reserved_values,
+                          default=None, prompt=None, title=None, **kwargs):
+    return GetValueWindow.show(
+        None,
+        value_type='string',
+        default=default,
+        prompt=prompt,
+        title=title,
+        reserved_values=reserved_values,
+        **kwargs
+        )
+
+
+def ask_for_one_item(items, default=None, prompt=None, title=None, **kwargs):
     return GetValueWindow.show(
         items,
         value_type='dropdown',
         default=default,
         prompt=prompt,
-        title=title
+        title=title,
+        **kwargs
         )
 
 
-def ask_for_date(default=None, prompt=None, title=None):
+def ask_for_date(default=None, prompt=None, title=None, **kwargs):
     return GetValueWindow.show(
         None,
         value_type='date',
         default=default,
         prompt=prompt,
-        title=title
+        title=title,
+        **kwargs
         )
 
 

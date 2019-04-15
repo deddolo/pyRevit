@@ -13,6 +13,7 @@ import os.path as op
 import warnings
 
 from pyrevit import EXEC_PARAMS, PyRevitException
+from pyrevit import coreutils
 from pyrevit.coreutils import logger
 from pyrevit.coreutils import appdata
 from pyrevit.coreutils import envvars
@@ -294,7 +295,7 @@ def get_document_data_file(file_id, file_ext, add_cmd_name=False):
     Returns:
         str: full file path
     """
-    proj_info = revit.get_project_info()    #pylint: disable=E1101
+    proj_info = revit.query.get_project_info()
 
     if add_cmd_name:
         script_file_id = '{}_{}_{}'.format(EXEC_PARAMS.command_name,
@@ -449,9 +450,13 @@ def exit():     #pylint: disable=W0622
 
 def show_file_in_explorer(file_path):
     """Show file in Windows Explorer."""
-    import subprocess
-    subprocess.Popen(r'explorer /select,"{}"'
-                     .format(os.path.normpath(file_path)))
+    coreutils.show_entry_in_explorer(file_path)
+
+
+def show_folder_in_explorer(folder_path):
+    """Show folder in Windows Explorer."""
+    coreutils.open_folder_in_explorer(folder_path)
+
 
 
 def open_url(url):

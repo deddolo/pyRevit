@@ -12,7 +12,7 @@ class ViewTemplateToPurge(forms.TemplateListItem):
 
 
 viewlist = DB.FilteredElementCollector(revit.doc)\
-             .OfCategory(DB.BuiltInCategory.OST_Views)\
+             .OfClass(DB.View)\
              .WhereElementIsNotElementType()\
              .ToElements()
 
@@ -22,7 +22,7 @@ usedvtemp = set()
 views = []
 
 for v in viewlist:
-    if v.IsTemplate and 'master' not in v.ViewName.lower():
+    if v.IsTemplate and 'master' not in revit.query.get_name(v).lower():
         vtemp.add(v.Id.IntegerValue)
     else:
         views.append(v)

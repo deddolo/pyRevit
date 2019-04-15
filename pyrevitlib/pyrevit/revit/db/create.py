@@ -2,6 +2,7 @@ from pyrevit import HOST_APP, PyRevitException
 from pyrevit import framework
 from pyrevit.framework import clr
 from pyrevit import coreutils
+from pyrevit.coreutils import appdata
 from pyrevit.coreutils.logger import get_logger
 from pyrevit import DB
 from pyrevit.revit import db
@@ -28,19 +29,22 @@ class FamilyLoaderOptionsHandler(DB.IFamilyLoadOptions):
         return True
 
 
-def create_shared_param(param_id_or_name, category_list, builtin_param_group,
-                        type_param=False, allow_vary_betwen_groups=False,  #pylint: disable=W0613
-                        doc=None):
+class CopyUseDestination(DB.IDuplicateTypeNamesHandler):
+    """Handle copy and paste errors."""
+
+    def OnDuplicateTypeNamesFound(self, args):
+        """Use destination model types if duplicate."""
+        return DB.DuplicateTypeAction.UseDestinationTypes
+
+
+def create_param_from_definition(param_def,
+                                 category_list,
+                                 builtin_param_group,
+                                 type_param=False,
+                                 allow_vary_betwen_groups=False,
+                                 doc=None):
     doc = doc or HOST_APP.doc
-    msp_list = query.get_defined_sharedparams()
-    param_def = None
-    for msp in msp_list:
-        if msp == param_id_or_name:
-            param_def = msp.param_def
-
-    if not param_def:
-        raise PyRevitException('Can not find shared parameter.')
-
+    # verify and create category set
     if category_list:
         category_set = query.get_category_set(category_list, doc=doc)
     else:
@@ -49,6 +53,7 @@ def create_shared_param(param_id_or_name, category_list, builtin_param_group,
     if not category_set:
         raise PyRevitException('Can not create category set.')
 
+    # create binding
     if type_param:
         new_binding = \
             HOST_APP.app.Create.NewTypeBinding(category_set)
@@ -56,10 +61,76 @@ def create_shared_param(param_id_or_name, category_list, builtin_param_group,
         new_binding = \
             HOST_APP.app.Create.NewInstanceBinding(category_set)
 
+    # FIXME: set allow_vary_betwen_groups
+    # param_def.SetAllowVaryBetweenGroups(doc, allow_vary_betwen_groups)
+    # insert the binding
     doc.ParameterBindings.Insert(param_def,
                                  new_binding,
                                  builtin_param_group)
     return True
+
+
+def create_shared_param(param_id_or_name,
+                        category_list,
+                        builtin_param_group,
+                        type_param=False,
+                        allow_vary_betwen_groups=False,
+                        doc=None):
+    doc = doc or HOST_APP.doc
+    # get define shared parameters
+    # this is where we grab the ExternalDefinition for the parameter
+    msp_list = query.get_defined_sharedparams()
+    param_def = None
+    for msp in msp_list:
+        if msp == param_id_or_name:
+            param_def = msp.param_def
+    if not param_def:
+        raise PyRevitException('Can not find shared parameter.')
+
+    # now create the binding for this definition
+    return create_param_from_definition(
+        param_def,
+        category_list,
+        builtin_param_group=builtin_param_group,
+        type_param=type_param,
+        allow_vary_betwen_groups=allow_vary_betwen_groups,
+        doc=doc)
+
+
+
+# def create_project_parameter(param_name,
+#                              param_type,
+#                              category_list,
+#                              builtin_param_group,
+#                              type_param=False,
+#                              allow_vary_betwen_groups=False,
+#                              doc=None):
+#     doc = doc or HOST_APP.doc
+#     # setup the stupid hacky way to create the project parameter
+#     # https://forums.autodesk.com/t5/revit-api-forum/create-project-parameter-not-shared-parameter/td-p/5150182
+#     # record the existing shared param file
+#     existing_spfile = HOST_APP.app.SharedParametersFilename
+#     # go thru creating a temp param file, creating the ext definition
+#     temp_spfile = appdata.get_instance_data_file('newpparam')
+#     coreutils.touch(temp_spfile)
+#     HOST_APP.app.SharedParametersFilename = temp_spfile
+#     # create param definition
+#     edco = DB.ExternalDefinitionCreationOptions(param_name, param_type)
+#     temp_groups = HOST_APP.app.OpenSharedParameterFile().Groups
+#     temp_group = temp_groups.Create("ProjectParams")
+#     param_def = temp_group.Definitions.Create(edco)
+#     # reset shared param file to original
+#     HOST_APP.app.SharedParametersFilename = existing_spfile
+#     appdata.garbage_data_file(temp_spfile)
+
+#     # now create the binding for this definition
+#     return create_param_from_definition(
+#         param_def,
+#         category_list,
+#         builtin_param_group=builtin_param_group,
+#         type_param=type_param,
+#         allow_vary_betwen_groups=allow_vary_betwen_groups,
+#         doc=doc)
 
 
 def create_new_project(template=None, imperial=True):
@@ -84,7 +155,21 @@ def create_revision(description=None, by=None, to=None, date=None,
     return new_rev
 
 
-def copy_revisions(src_doc, dest_doc, revisions=None):
+def copy_elements(element_ids, src_doc, dest_doc):
+    cp_options = DB.CopyPasteOptions()
+    cp_options.SetDuplicateTypeNamesHandler(CopyUseDestination())
+
+    if element_ids:
+        DB.ElementTransformUtils.CopyElements(
+            src_doc,
+            framework.List[DB.ElementId](element_ids),
+            dest_doc, None, cp_options
+            )
+
+    return True
+
+
+def copy_revisions(revisions, src_doc, dest_doc):
     if revisions is None:
         all_src_revs = query.get_revisions(doc=src_doc)
     else:
@@ -106,6 +191,20 @@ def copy_revisions(src_doc, dest_doc, revisions=None):
                             doc=dest_doc)
 
 
+def copy_all_revisions(src_doc, dest_doc):
+    copy_revisions(None, src_doc=src_doc, dest_doc=dest_doc)
+
+
+def copy_viewtemplates(viewtemplates, src_doc, dest_doc):
+    if viewtemplates is None:
+        all_viewtemplates = query.get_all_view_templates(doc=src_doc)
+    else:
+        all_viewtemplates = viewtemplates
+
+    vtemp_ids = [x.Id for x in all_viewtemplates]
+    copy_elements(vtemp_ids, src_doc=src_doc, dest_doc=dest_doc)
+
+
 def create_sheet(sheet_num, sheet_name,
                  titleblock_id=DB.ElementId.InvalidElementId, doc=None):
     doc = doc or HOST_APP.doc
@@ -119,7 +218,7 @@ def create_sheet(sheet_num, sheet_name,
 
 def create_3d_view(view_name, isometric=True, doc=None):
     doc = doc or HOST_APP.doc
-    nview = query.get_view_by_name(view_name)
+    nview = query.get_view_by_name(view_name, doc=doc)
     if not nview:
         default_3dview_type = \
             doc.GetDefaultElementTypeId(DB.ElementTypeGroup.ViewType3D)
@@ -127,7 +226,12 @@ def create_3d_view(view_name, isometric=True, doc=None):
             nview = DB.View3D.CreateIsometric(doc, default_3dview_type)
         else:
             nview = DB.View3D.CreatePerspective(doc, default_3dview_type)
-    nview.ViewName = view_name
+
+    if HOST_APP.is_newer_than('2019', or_equal=True):
+        nview.Name = view_name
+    else:
+        nview.ViewName = view_name
+
     nview.CropBoxActive = False
     nview.CropBoxVisible = False
     if nview.CanToggleBetweenPerspectiveAndIsometric():
@@ -140,6 +244,7 @@ def create_3d_view(view_name, isometric=True, doc=None):
 
 def create_revision_sheetset(revisions,
                              name_format='Revision {}',
+                             match_any=True,
                              doc=None):
     doc = doc or HOST_APP.doc
     # get printed printmanager
@@ -165,11 +270,12 @@ def create_revision_sheetset(revisions,
 
     # find revised sheets
     myviewset = DB.ViewSet()
+    check_func = any if match_any else all
     for sheet in sheets:
         revs = sheet.GetAllRevisionIds()
         sheet_revids = [x.IntegerValue for x in revs]
-        if all([x.Id.IntegerValue in sheet_revids
-                for x in revisions]):
+        if check_func([x.Id.IntegerValue in sheet_revids
+                       for x in revisions]):
             myviewset.Insert(sheet)
 
     # needs transaction
@@ -217,7 +323,7 @@ def create_filledregion(filledregion_name, fillpattern_element, doc=None):
     filledregion_types = DB.FilteredElementCollector(doc) \
                            .OfClass(DB.FilledRegionType)
     for filledregion_type in filledregion_types:
-        if db.ElementWrapper(filledregion_type).name == filledregion_name:
+        if query.get_name(filledregion_type) == filledregion_name:
             raise PyRevitException('Filled Region matching \"{}\" already '
                                    'exists.'.format(filledregion_name))
     source_filledregion = filledregion_types.FirstElement()

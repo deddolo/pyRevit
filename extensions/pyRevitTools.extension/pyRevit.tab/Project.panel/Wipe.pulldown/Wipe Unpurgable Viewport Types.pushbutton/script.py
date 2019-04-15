@@ -9,7 +9,7 @@ from pyrevit import script
 __doc__ = 'Asks user to select the viewport types to be converted and the '\
           'viewport type to be replaced with. I made this tool to fix a '\
           'problem with viewport types duplicating themselves '\
-          'during a project abd become unpurgable viewport types.'
+          'during a project and would become unpurgable viewport types.'
 
 
 logger = script.get_logger()
@@ -20,12 +20,12 @@ class ViewPortType:
         self._rvt_type = rvt_element_type
 
     def __str__(self):
-        return revit.ElementWrapper(self._rvt_type).name
+        return revit.query.get_name(self._rvt_type)
 
     def __repr__(self):
         return '<{} Name:{} Id:{}>'\
                .format(self.__class__.__name__,
-                       revit.ElementWrapper(self._rvt_type).name,
+                       revit.query.get_name(self._rvt_type),
                        self._rvt_type.Id.IntegerValue)
 
     def __lt__(self, other):

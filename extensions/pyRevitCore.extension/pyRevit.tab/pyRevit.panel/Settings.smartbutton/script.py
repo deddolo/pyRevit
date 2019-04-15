@@ -82,6 +82,10 @@ class SettingsWindow(forms.WPFWindow):
                                    '2018': self.revit2018_cb,
                                    '2019': self.revit2019_cb}
 
+        self.set_image_source(self.lognone, 'lognone.png')
+        self.set_image_source(self.logverbose, 'logverbose.png')
+        self.set_image_source(self.logdebug, 'logdebug.png')
+
         self._setup_outputsettings()
         self._setup_usagelogging()
         self._setup_addinfiles()
@@ -108,7 +112,7 @@ class SettingsWindow(forms.WPFWindow):
             self.asciicache_rb.IsChecked = True
 
         req_build = user_config.core.get_option('requiredhostbuild',
-                                                default_value=0)
+                                                default_value="")
         self.requiredhostbuild_tb.Text = str(req_build)
 
         min_freespace = user_config.core.get_option('minhostdrivefreespace',
@@ -121,19 +125,31 @@ class SettingsWindow(forms.WPFWindow):
         self.rocketmode_cb.IsChecked = user_config.core.rocketmode
 
     def _setup_engines(self):
-        attachment = self.get_current_attachment()
+        attachment = user_config.get_current_attachment()
         if attachment and attachment.Clone:
             engine_cfgs = \
                 [PyRevitEngineConfig(x) for x in attachment.Clone.GetEngines()]
             engine_cfgs = \
                 sorted(engine_cfgs,
                        key=lambda x: x.engine.Version, reverse=True)
-            self.availableEngines.ItemsSource = engine_cfgs
 
-            # now select the current engine
+            # add engines to ui
+            self.availableEngines.ItemsSource = \
+                [x for x in engine_cfgs if x.engine.Runtime]
+            self.cpythonEngines.ItemsSource = \
+                [x for x in engine_cfgs if not x.engine.Runtime]
+
+            # now select the current runtime engine
             for engine_cfg in self.availableEngines.ItemsSource:
                 if engine_cfg.engine.Version == int(EXEC_PARAMS.engine_ver):
                     self.availableEngines.SelectedItem = engine_cfg
+                    break
+
+            # now select the current runtime engine
+            self.cpyengine = user_config.get_active_cpython_engine()
+            for engine_cfg in self.cpythonEngines.ItemsSource:
+                if engine_cfg.engine.Version == self.cpyengine.Version:
+                    self.cpythonEngines.SelectedItem = engine_cfg
                     break
         else:
             logger.error('Error determining current attached clone.')
@@ -141,7 +157,8 @@ class SettingsWindow(forms.WPFWindow):
 
     def _setup_user_extensions_list(self):
         """Reads the user extension folders and updates the list"""
-        self.extfolders_lb.ItemsSource = user_config.core.userextensions
+        self.extfolders_lb.ItemsSource = \
+            user_config.get_thirdparty_ext_root_dirs(include_default=False)
 
     def _setup_env_vars_list(self):
         """Reads the pyRevit environment variables and updates the list"""
@@ -185,7 +202,7 @@ class SettingsWindow(forms.WPFWindow):
         """Gets the installed Revit versions and sets up the ui"""
         installed_revits = \
             {str(x.ProductYear):x
-             for x in Revit.RevitController.ListInstalledRevits()}
+             for x in Revit.RevitProduct.ListInstalledProducts()}
         attachments = \
             {str(x.Product.ProductYear):x
              for x in Revit.PyRevit.GetAttachments()}
@@ -224,11 +241,6 @@ class SettingsWindow(forms.WPFWindow):
                     checkbox.IsChecked = False
 
     @staticmethod
-    def get_current_attachment():
-        hostver = int(HOST_APP.version)
-        return Revit.PyRevit.GetAttached(hostver)
-
-    @staticmethod
     def update_usagelogging():
         """Updates the usage logging system per changes.
 
@@ -243,36 +255,37 @@ class SettingsWindow(forms.WPFWindow):
     def update_addinfiles(self):
         """Enables/Disables the adding files for different Revit versions."""
         # update active engine
-        attachment = self.get_current_attachment()
+        attachment = user_config.get_current_attachment()
         if attachment:
             all_users = attachment.AttachmentType == \
                 Revit.PyRevitAttachmentType.AllUsers
 
             # notify use to restart if engine has changed
-            new_engine = self.availableEngines.SelectedItem.engine.Version
-            if not self.is_same_version_as_running(new_engine):
-                forms.alert('Active engine has changed. '
-                            'Restart Revit for this change to take effect.')
-            # configure the engine on this version
-            Revit.PyRevit.Attach(
-                int(HOST_APP.version),
-                attachment.Clone,
-                new_engine,
-                all_users
-                )
+            if self.availableEngines.SelectedItem:
+                new_engine = self.availableEngines.SelectedItem.engine.Version
+                if not self.is_same_version_as_running(new_engine):
+                    forms.alert('Active engine has changed. '
+                                'Restart Revit for this change to take effect.')
+                # configure the engine on this version
+                Revit.PyRevit.Attach(
+                    int(HOST_APP.version),
+                    attachment.Clone,
+                    new_engine,
+                    all_users
+                    )
 
-            # now setup the attachments for other versions
-            for rvt_ver, checkbox in self._addinfiles_cboxes.items():
-                if checkbox.IsEnabled:
-                    if checkbox.IsChecked:
-                        Revit.PyRevit.Attach(
-                            int(rvt_ver),
-                            attachment.Clone,
-                            self.availableEngines.SelectedItem.engine.Version,
-                            all_users
-                            )
-                    else:
-                        Revit.PyRevit.Detach(int(rvt_ver))
+                # now setup the attachments for other versions
+                for rvt_ver, checkbox in self._addinfiles_cboxes.items():
+                    if checkbox.IsEnabled:
+                        if checkbox.IsChecked:
+                            Revit.PyRevit.Attach(
+                                int(rvt_ver),
+                                attachment.Clone,
+                                new_engine,
+                                all_users
+                                )
+                        else:
+                            Revit.PyRevit.Detach(int(rvt_ver))
         else:
             logger.error('Error determining current attached clone.')
 
@@ -324,6 +337,11 @@ class SettingsWindow(forms.WPFWindow):
         """Callback method for removing all extension folders"""
         self.extfolders_lb.ItemsSource = []
 
+    def openextfolder(self, sender, args):
+        selected_path = self.extfolders_lb.SelectedItem
+        if selected_path:
+            script.show_file_in_explorer(selected_path)
+
     def pick_usagelog_folder(self, sender, args):
         """Callback method for picking destination folder for usage log files"""
         new_path = forms.pick_folder()
@@ -368,6 +386,14 @@ class SettingsWindow(forms.WPFWindow):
         user_config.core.compilevb = self.compilevb_cb.IsChecked
         user_config.core.requiredhostbuild = self.requiredhostbuild_tb.Text
 
+        # set active cpython engine
+        engine_cfg = self.cpythonEngines.SelectedItem
+        if engine_cfg:
+            user_config.core.cpyengine = engine_cfg.engine.Version
+            if self.cpyengine.Version != engine_cfg.engine.Version:
+                forms.alert('Active CPython engine has changed. '
+                            'Restart Revit for this change to take effect.')
+
         try:
             min_freespace = int(self.minhostdrivefreespace_tb.Text)
             user_config.core.minhostdrivefreespace = min_freespace
@@ -376,15 +402,16 @@ class SettingsWindow(forms.WPFWindow):
             user_config.core.minhostdrivefreespace = 0
 
         user_config.core.loadbeta = self.loadbetatools_cb.IsChecked
-        user_config.core.startuplogtimeout = self.startup_log_timeout.Text
+        user_config.core.startuplogtimeout = int(self.startup_log_timeout.Text)
         user_config.core.rocketmode = self.rocketmode_cb.IsChecked
 
         # set extension folders from the list, after cleanup empty items
         if isinstance(self.extfolders_lb.ItemsSource, list):
-            user_config.core.userextensions = \
+            user_config.set_thirdparty_ext_root_dirs(
                 coreutils.filter_null_items(self.extfolders_lb.ItemsSource)
+            )
         else:
-            user_config.core.userextensions = []
+            user_config.set_thirdparty_ext_root_dirs([])
 
         # set usage logging configs
         user_config.usagelogging.active = self.usagelogging_cb.IsChecked

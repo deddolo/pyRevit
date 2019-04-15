@@ -16,7 +16,9 @@ import shutil
 import random
 import stat
 import codecs
+import math
 from collections import defaultdict
+import _winreg as wr
 
 #pylint: disable=E0401
 from pyrevit import HOST_APP, PyRevitException
@@ -89,16 +91,19 @@ class ScriptFileParser:
         Args:
             file_address (str): python script file path
         """
+        self.ast_tree = None
         self.file_addr = file_address
         with open(file_address, 'r') as source_file:
-            self.ast_tree = ast.parse(source_file.read())
+            contents = source_file.read()
+            if contents and not '#! python3' in contents:
+                self.ast_tree = ast.parse(contents)
 
     def get_docstring(self):
         """Get global docstring."""
-        doc_str = ast.get_docstring(self.ast_tree)
-        if doc_str:
-            return doc_str.decode('utf-8')
-        return None
+        if self.ast_tree:
+            doc_str = ast.get_docstring(self.ast_tree)
+            if doc_str:
+                return doc_str.decode('utf-8')
 
     def extract_param(self, param_name, default_value=None):
         """Find variable and extract its value.
@@ -111,20 +116,21 @@ class ScriptFileParser:
         Returns:
             any: value of the variable or :obj:`None`
         """
-        try:
-            for child in ast.iter_child_nodes(self.ast_tree):
-                if hasattr(child, 'targets'):
-                    for target in child.targets:
-                        if hasattr(target, 'id') and target.id == param_name:
-                            param_value = ast.literal_eval(child.value)
-                            if isinstance(param_value, str):
-                                param_value = param_value.decode('utf-8')
-                            return param_value
-        except Exception as err:
-            raise PyRevitException('Error parsing parameter: {} '
-                                   'in script file for : {} | {}'
-                                   .format(param_name, self.file_addr, err))
-
+        if self.ast_tree:
+            try:
+                for child in ast.iter_child_nodes(self.ast_tree):
+                    if hasattr(child, 'targets'):
+                        for target in child.targets:
+                            if hasattr(target, 'id') \
+                                    and target.id == param_name:
+                                param_value = ast.literal_eval(child.value)
+                                if isinstance(param_value, str):
+                                    param_value = param_value.decode('utf-8')
+                                return param_value
+            except Exception as err:
+                raise PyRevitException('Error parsing parameter: {} '
+                                       'in script file for : {} | {}'
+                                       .format(param_name, self.file_addr, err))
         return default_value
 
 
@@ -311,7 +317,7 @@ def get_revit_instance_count():
     return len(list(framework.Process.GetProcessesByName(HOST_APP.proc_name)))
 
 
-def run_process(proc, cwd=''):
+def run_process(proc, cwd='C:'):
     """Run shell process silently.
 
     Args:
@@ -804,6 +810,17 @@ def open_folder_in_explorer(folder_path):
                      .format(os.path.normpath(folder_path)))
 
 
+def show_entry_in_explorer(entry_path):
+    """Show given entry in Windows Explorer.
+
+    Args:
+        entry_path (str): directory or file path
+    """
+    import subprocess
+    subprocess.Popen(r'explorer /select,"{}"'
+                     .format(os.path.normpath(entry_path)))
+
+
 def fully_remove_dir(dir_path):
     """Remove directory recursively.
 
@@ -830,7 +847,7 @@ def cleanup_filename(file_name):
         >>> cleanup_filename('Myfile-(3).txt')
         "Myfile3.txt"
     """
-    return re.sub(r'[^\w_.)( -]', '', file_name)
+    return re.sub(r'[^\w_.)( -#]', '', file_name)
 
 
 def _inc_or_dec_string(str_id, shift):
@@ -1245,6 +1262,26 @@ def correct_revittxt_encoding(filename):
         newf.writelines(fcontent)
 
 
+def check_revittxt_encoding(filename):
+    """Check if given file is in UTF-16 (UCS-2 LE) encoding.
+
+    Args:
+        filename (str): file path
+    """
+    with open(filename, 'rb') as rtfile:
+        return rtfile.read()[:2] == codecs.BOM_UTF16
+
+
+def check_utf8bom_encoding(filename):
+    """Check if given file is in UTF-8 encoding.
+
+    Args:
+        filename (str): file path
+    """
+    with open(filename, 'rb') as rtfile:
+        return rtfile.read()[:3] == codecs.BOM_UTF8
+
+
 def has_nonprintable(input_str):
     """Check input string for non-printable characters.
 
@@ -1257,9 +1294,21 @@ def has_nonprintable(input_str):
     return any([x in input_str for x in UNICODE_NONPRINTABLE_CHARS])
 
 
+def get_enum_values(enum_type):
+    """Returns enum values."""
+    return framework.Enum.GetValues(enum_type)
+
+
+def get_enum_value(enum_type, value_string):
+    """Return enum value matching given value string (case insensitive)"""
+    for ftype in get_enum_values(enum_type):
+        if str(ftype).lower() == value_string.lower():
+            return ftype
+
+
 def get_enum_none(enum_type):
     """Returns the None value in given Enum."""
-    for val in framework.Enum.GetValues(enum_type):
+    for val in get_enum_values(enum_type):
         if str(val) == 'None':
             return val
 
@@ -1287,6 +1336,121 @@ def format_hex_rgb(rgb_value):
 
 
 def new_uuid():
+    """Create a new UUID (using dotnet Guid.NewGuid)"""
     # RE: https://github.com/eirannejad/pyRevit/issues/413
     # return uuid.uuid1()
     return str(Guid.NewGuid())
+
+
+def is_box_visible_on_screens(left, top, width, height):
+    """Check if given box is visible on any screen."""
+    bounds = \
+        framework.Drawing.Rectangle(
+            framework.Convert.ToInt32(0 if math.isnan(left) else left),
+            framework.Convert.ToInt32(0 if math.isnan(top) else top),
+            framework.Convert.ToInt32(0 if math.isnan(width) else width),
+            framework.Convert.ToInt32(0 if math.isnan(height) else height)
+            )
+    for scr in framework.Forms.Screen.AllScreens:
+        if bounds.IntersectsWith(scr.Bounds):
+            return True
+    return False
+
+
+def fuzzy_search_ratio(target_string, sfilter):
+    """Match target string against the filter and return a match ratio.
+    
+    Args:
+        target_string (str): target string
+        sfilter (str): search term
+
+    Returns:
+        int: integer between 0 to 100, with 100 being the exact match
+    """
+    tstring = target_string
+    # 100 for identical matches
+    if sfilter == tstring:
+        return 100
+
+    # 98 to 99 reserved (2 scores)
+
+    # 97 for identical non-case-sensitive matches
+    lower_tstring = tstring.lower()
+    lower_sfilter_str = sfilter.lower()
+    if lower_sfilter_str == lower_tstring:
+        return 97
+
+    # 95  to 96 reserved (2 scores)
+
+    # 93 to 94 for inclusion matches
+    if sfilter in tstring:
+        return 94
+    if lower_sfilter_str in lower_tstring:
+        return 93
+
+    # 91  to 92 reserved (2 scores)
+
+    ## 80 to 90 for parts matches
+    tstring_parts = tstring.split()
+    sfilter_parts = sfilter.split()
+    if all(x in tstring_parts for x in sfilter_parts):
+        return 90
+
+    # 88 to 89 reserved (2 scores)
+
+    lower_tstring_parts = [x.lower() for x in tstring_parts]
+    lower_sfilter_parts = [x.lower() for x in sfilter_parts]
+    if all(x in lower_tstring_parts for x in lower_sfilter_parts):
+        return 87
+
+    # 85 to 86 reserved (2 scores)
+
+    if all(x in tstring for x in sfilter_parts):
+        return 84
+
+    # 82 to 83 reserved (2 scores)
+
+    if all(x in lower_tstring for x in lower_sfilter_parts):
+        return 81
+
+    # 80 reserved
+
+    return 0
+
+
+def get_exe_version(exepath):
+    """Extract Product Version value from EXE file."""
+    version_info = framework.Diagnostics.FileVersionInfo.GetVersionInfo(exepath)
+    return version_info.ProductVersion
+
+
+def get_reg_key(key, subkey):
+    """Get value of the given Windows registry key and subkey.
+
+    Args:
+        key (PyHKEY): parent registry key
+        subkey (str): subkey path
+
+    Returns:
+        PyHKEY: registry key if found, None if not found
+
+    Example:
+        >>> get_reg_key(wr.HKEY_CURRENT_USER, 'Control Panel/International')
+        ... <PyHKEY at 0x...>
+    """
+    try:
+        return wr.OpenKey(key, subkey, 0, wr.KEY_READ)
+    except Exception:
+        return None
+
+
+def kill_tasks(task_name):
+    """Kill running tasks matching task_name
+
+    Args:
+        task_name (str): task name
+
+    Example:
+        >>> kill_tasks('Revit.exe')
+    """
+    os.system("taskkill /f /im %s" % task_name)

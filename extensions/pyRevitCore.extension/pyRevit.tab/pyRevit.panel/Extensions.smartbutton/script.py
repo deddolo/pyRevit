@@ -48,6 +48,9 @@ class ExtensionPackageListItem:
         elif self.ext_pkg.type == \
                 exts.ExtensionTypes.UI_EXTENSION:
             self.Type = 'Revit UI Tools'
+        elif self.ext_pkg.type == \
+                exts.ExtensionTypes.RUN_EXTENSION:
+            self.Type = 'CLI Run Commands'
 
         # setting up other list data
         self.Builtin = self.ext_pkg.builtin
@@ -110,7 +113,19 @@ class ExtensionsWindow(forms.WPFWindow):
         Returns:
             ExtensionPackageListItem:
         """
-        return self.extpkgs_lb.SelectedItem
+        if len(list(self.extpkgs_lb.SelectedItems)) == 1:
+            return self.extpkgs_lb.SelectedItem
+
+    @property
+    def selected_pkgs(self):
+        """
+        Returns all the currently selected ExtensionPackageListItem in
+        the extension packages list
+
+        Returns:
+            list[ExtensionPackageListItem]:
+        """
+        return self.extpkgs_lb.SelectedItems
 
     def _setup_ext_dirs_ui(self, ext_dirs_list):
         """Creates the installation destination context menu. Creates a menu
@@ -201,35 +216,76 @@ class ExtensionsWindow(forms.WPFWindow):
         else:
             self.hide_element(self.ext_dependencies_l)
 
-    def _update_ext_action_buttons(self, ext_pkg_item):
+    def _update_toggle_button(self, enable=True, multiple=False):
+        self.show_element(self.ext_toggle_b)
+        if enable:
+            self.ext_toggle_b.Content = \
+                self.ext_toggle_b.Content.replace('Dis', 'En')
+        else:
+            self.ext_toggle_b.Content = \
+                self.ext_toggle_b.Content.replace('En', 'Dis')
+        
+        if multiple:
+            self.ext_toggle_b.Content = \
+                self.ext_toggle_b.Content.replace('Extension', 'Extensions')
+        else:
+            self.ext_toggle_b.Content = \
+                self.ext_toggle_b.Content.replace('Extensions', 'Extension')
+
+    def _update_ext_action_buttons(self, ext_pkg_items):
         """Updates the status of actions buttons depending on the status of
         the provided ext_pkg_item. e.g. disable the Install button if the
         package is already installed.
 
         Args:
-            ext_pkg_item: Extension package to update the action buttons
+            ext_pkg_items: Extension packages to update the action buttons
         """
+        if len(ext_pkg_items) == 1:
+            ext_pkg_item = ext_pkg_items[0]
+            if ext_pkg_item.ext_pkg.is_installed:
+                # Action Button: Install
+                self.hide_element(self.ext_install_b)
 
-        if ext_pkg_item.ext_pkg.is_installed:
-            # Action Button: Install
+                # Action Button: Remove
+                if ext_pkg_item.ext_pkg.builtin:
+                    self.hide_element(self.ext_remove_b)
+                else:
+                    self.show_element(self.ext_remove_b)
+
+                # Action Button: Toggle (Enable / Disable)
+                if ext_pkg_item.ext_pkg.is_cli_ext:
+                    self.hide_element(self.ext_toggle_b)
+                else:
+                    self._update_toggle_button(
+                        enable=ext_pkg_item.ext_pkg.config.disabled
+                    )
+            else:
+                self.show_element(self.ext_install_b)
+                self.hide_element(self.ext_toggle_b, self.ext_remove_b)
+        elif len(ext_pkg_items) > 1:
+            self.hide_element(self.ext_update_b)
             self.hide_element(self.ext_install_b)
-
-            # Action Button: Remove
-            if ext_pkg_item.ext_pkg.builtin:
-                self.hide_element(self.ext_remove_b)
+            self.hide_element(self.ext_remove_b)
+            # hide the button if includes any cli extensions
+            if any([x.ext_pkg.is_cli_ext for x in ext_pkg_items]):
+                self.hide_element(self.ext_toggle_b)
+            # hide the button if any ext is not installed
+            elif any([not x.ext_pkg.is_installed for x in ext_pkg_items]):
+                self.hide_element(self.ext_toggle_b)
             else:
-                self.show_element(self.ext_remove_b)
+                all_disabled = \
+                    [x.ext_pkg.config.disabled for x in ext_pkg_items]
+                if all(all_disabled):
+                    self._update_toggle_button(enable=True, multiple=True)
+                    return
 
-            # Action Button: Toggle (Enable / Disable)
-            self.show_element(self.ext_toggle_b)
-            if ext_pkg_item.ext_pkg.config.disabled:
-                self.ext_toggle_b.Content = 'Enable Package'
-            else:
-                self.ext_toggle_b.Content = 'Disable Package'
-
-        else:
-            self.show_element(self.ext_install_b)
-            self.hide_element(self.ext_toggle_b, self.ext_remove_b)
+                all_enabled = \
+                    [not x.ext_pkg.config.disabled for x in ext_pkg_items]
+                if all(all_enabled):
+                    self._update_toggle_button(enable=False, multiple=True)
+                    return
+                # hide the button if mixed enabled and disabled
+                self.hide_element(self.ext_toggle_b)
 
     def _update_ext_settings_panel(self, ext_pkg_item):
         """Updates the package settings panel based on the provided
@@ -240,18 +296,24 @@ class ExtensionsWindow(forms.WPFWindow):
 
         """
 
-        try:
-            # Is package using a private git repo?
-            self.privaterepo_cb.IsChecked = \
-                ext_pkg_item.ext_pkg.config.private_repo
-            self.privaterepo_cb.UpdateLayout()
+        if ext_pkg_item.Builtin:
+            self.hide_element(self.extCredentials)
+            self.hide_element(self.ext_update_b)
+        else:
+            self.show_element(self.extCredentials)
+            self.show_element(self.ext_update_b)
+            try:
+                # Is package using a private git repo?
+                self.privaterepo_cb.IsChecked = \
+                    ext_pkg_item.ext_pkg.config.private_repo
+                self.privaterepo_cb.UpdateLayout()
 
-            # Set current username and pass for the private repo
-            self.repousername_tb.Text = ext_pkg_item.ext_pkg.config.username
-            self.repopassword_tb.Text = ext_pkg_item.ext_pkg.config.password
-        except Exception:
-            self.privaterepo_cb.IsChecked = False
-            self.repopassword_tb.Text = self.repousername_tb.Text = ''
+                # Set current username and pass for the private repo
+                self.repousername_tb.Text = ext_pkg_item.ext_pkg.config.username
+                self.repopassword_tb.Text = ext_pkg_item.ext_pkg.config.password
+            except Exception:
+                self.privaterepo_cb.IsChecked = False
+                self.repopassword_tb.Text = self.repousername_tb.Text = ''
 
     def _list_options(self, option_filter=None):
         if option_filter:
@@ -279,17 +341,17 @@ class ExtensionsWindow(forms.WPFWindow):
         """Callback for updating info panel on package selection change
         """
         if self.selected_pkg:
+            self.show_element(self.ext_infostack)
             self.show_element(self.ext_infopanel)
             self._update_ext_info_panel(self.selected_pkg)
-            self._update_ext_action_buttons(self.selected_pkg)
+            self._update_ext_action_buttons([self.selected_pkg])
             self._update_ext_settings_panel(self.selected_pkg)
+        elif self.selected_pkgs:
+            self.hide_element(self.ext_infostack)
+            self.hide_element(self.extCredentials)
+            self._update_ext_action_buttons(self.selected_pkgs)
         else:
             self.hide_element(self.ext_infopanel)
-
-    def handle_url_click(self, sender, args):
-        """Callback for handling click on package website url
-        """
-        script.open_url(sender.NavigateUri.AbsoluteUri)
 
     def handle_private_repo(self, sender, args):
         """Callback for updating private status of a package
@@ -345,8 +407,11 @@ class ExtensionsWindow(forms.WPFWindow):
     def toggle_ext_pkg(self, sender, args):
         """Enables/Disables the selected exension, then reloads pyRevit
         """
-
-        self.selected_pkg.ext_pkg.toggle_package()
+        if self.selected_pkg:
+            self.selected_pkg.ext_pkg.toggle_package()
+        elif self.selected_pkgs:
+            for pkg in self.selected_pkgs:
+                pkg.ext_pkg.toggle_package()
         self.Close()
         call_reload()
 
@@ -357,7 +422,8 @@ class ExtensionsWindow(forms.WPFWindow):
         try:
             extpkgs.remove(self.selected_pkg.ext_pkg)
             self.Close()
-            call_reload()
+            if not self.selected_pkg.ext_pkg.is_cli_ext:
+                call_reload()
         except Exception as pkg_remove_err:
             logger.error('Error removing package. | {}'.format(pkg_remove_err))
 

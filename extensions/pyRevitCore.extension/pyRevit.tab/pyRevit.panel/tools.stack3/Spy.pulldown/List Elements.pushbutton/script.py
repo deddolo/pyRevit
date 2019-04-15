@@ -42,7 +42,8 @@ switches = ['Graphic Styles',
             'Worksets',
             'Fill Grids',
             'Connected Circuits',
-            'Point Cloud Instances'
+            'Point Cloud Instances',
+            'External Services'
             ]
 
 selected_switch = \
@@ -81,12 +82,11 @@ elif selected_switch == 'Line Patterns':
         print(i.Name)
 
 elif selected_switch == 'Line Styles':
-    c = revit.doc.Settings.Categories.get_Item(DB.BuiltInCategory.OST_Lines)
-    subcats = c.SubCategories
-
-    for lineStyle in subcats:
-        print("STYLE NAME: {0} ID: {1}".format(lineStyle.Name.ljust(40),
-                                               lineStyle.Id.ToString()))
+    for lineStyle in revit.query.get_line_styles(doc=revit.doc):
+        print("STYLE NAME: {} ID: {} ({})".format(
+            lineStyle.Name.ljust(40),
+            lineStyle.Id.ToString(),
+            lineStyle))
 
 elif selected_switch == 'Model / Detail / Sketch Lines':
     cat_list = List[DB.BuiltInCategory]([DB.BuiltInCategory.OST_Lines,
@@ -188,7 +188,7 @@ elif selected_switch == 'Viewports':
         print('ID: {1}TYPE: {0}VIEWNAME: {2}'
               .format(v.Name.ljust(30),
                       str(v.Id).ljust(10),
-                      revit.doc.GetElement(v.ViewId).ViewName))
+                      revit.query.get_name(revit.doc.GetElement(v.ViewId))))
 
 elif selected_switch == 'Element Types':
     all_types = \
@@ -203,16 +203,14 @@ elif selected_switch == 'Element Types':
         output.print_md('**{}**'.format(etype_name))
         for et in etypes:
             print('\t{} {}'.format(output.linkify(et.Id),
-                                   revit.ElementWrapper(et).name))
-
+                                   revit.query.get_name(et)))
 
 elif selected_switch == 'Family Symbols':
     cl = DB.FilteredElementCollector(revit.doc)
     eltype_list = cl.OfClass(DB.ElementType).ToElements()
 
     for et in eltype_list:
-        wrapperd_et = revit.ElementWrapper(et)
-        print(wrapperd_et.name, et.FamilyName)
+        print(revit.query.get_name(et), et.FamilyName)
 
 elif selected_switch == 'Levels':
     levelslist = DB.FilteredElementCollector(revit.doc)\
@@ -342,7 +340,7 @@ elif selected_switch == 'Views':
         if HOST_APP.is_older_than(2016):
             underlayp = v.Parameter[DB.BuiltInParameter.VIEW_UNDERLAY_ID]
             print('TYPE: {1} ID: {2} TEMPLATE: {3} PHASE:{4} UNDERLAY:{5} {0}'
-                  .format(v.ViewName,
+                  .format(revit.query.get_name(v),
                           str(v.ViewType).ljust(20),
                           str(v.Id).ljust(10),
                           str(v.IsTemplate).ljust(10),
@@ -356,7 +354,7 @@ elif selected_switch == 'Views':
                 v.Parameter[DB.BuiltInParameter.VIEW_UNDERLAY_BOTTOM_ID]
             print('TYPE: {1} ID: {2} TEMPLATE: {3} PHASE:{4} '
                   'UNDERLAY TOP:{5} UNDERLAY BOTTOM:{6} {0}'
-                  .format(v.ViewName,
+                  .format(revit.query.get_name(v),
                           str(v.ViewType).ljust(20),
                           str(v.Id).ljust(10),
                           str(v.IsTemplate).ljust(10),
@@ -374,7 +372,8 @@ elif selected_switch == 'View Templates':
 
     for v in views:
         if v.IsTemplate:
-            print('ID: {1}		{0}'.format(v.ViewName, str(v.Id).ljust(10)))
+            print('ID: {1}		{0}'.format(revit.query.get_name(v),
+                                            str(v.Id).ljust(10)))
 
 elif selected_switch == 'Worksets':
     cl = DB.FilteredWorksetCollector(revit.doc)
@@ -394,8 +393,7 @@ elif selected_switch == 'Revision Clouds':
     for rev in revs:
         parent = revit.doc.GetElement(rev.OwnerViewId)
         rev = revit.doc.GetElement(rev.RevisionId)
-        wrev = revit.ElementWrapper(rev)
-        revnum = wrev.safe_get_param('RevisionNumber', None)
+        revnum = revit.query.get_param(rev, 'RevisionNumber', None)
 
         if revnum:
             revnumstr = 'REV#: {0}'.format(revnum)
@@ -415,7 +413,7 @@ elif selected_switch == 'Revision Clouds':
                   'ID: {2}\t\t'
                   'ON VIEW: {1}'
                   .format(revnumstr,
-                          parent.ViewName,
+                          revit.query.get_name(parent),
                           rev.Id))
 
 elif selected_switch == 'Selected Line Coordinates':
@@ -438,25 +436,27 @@ elif selected_switch == 'Selected Line Coordinates':
             print('Elemend with ID: {0} is a not a line.\n'.format(el.Id))
 
 elif selected_switch == 'Data Schema Entities':
-    allElements = \
-        list(DB.FilteredElementCollector(revit.doc)
-             .WherePasses(
-                 DB.LogicalOrFilter(DB.ElementIsElementTypeFilter(False),
-                                    DB.ElementIsElementTypeFilter(True))))
+    schemas = {x.GUID.ToString(): x
+               for x in revit.query.get_all_schemas()}
 
-    guids = {sc.GUID.ToString(): sc.SchemaName
-             for sc in DB.ExtensibleStorage.Schema.ListSchemas()}
-
-    for el in allElements:
-        schemaGUIDs = el.GetEntitySchemaGuids()
-        for guid in schemaGUIDs:
-            if guid.ToString() in guids.keys():
-                print('ELEMENT ID: {0}\t\t'
-                      'SCHEMA NAME: {1}'
-                      .format(el.Id.IntegerValue,
-                              guids[guid.ToString()]))
-
-    print('Iteration completed over {0} elements.'.format(len(allElements)))
+    for el in revit.query.get_all_elements(doc=revit.doc):
+        schema_guids = el.GetEntitySchemaGuids()
+        for guid_obj in schema_guids:
+            guid = guid_obj.ToString()
+            if guid in schemas:
+                schema = schemas[guid]
+                print(
+                    '{}{}'.format(
+                        '{} ({})'.format(
+                            output.linkify(el.Id),
+                            el.Category.Name
+                            ).ljust(40),
+                        schema.SchemaName
+                        )
+                    )
+                for fname, fval in \
+                    revit.query.get_schema_field_values(el, schema).items():
+                    print('\t%s: %s' %(fname, fval))
 
 elif selected_switch == 'Fill Grids':
     selection = revit.get_selection()
@@ -464,7 +464,7 @@ elif selected_switch == 'Fill Grids':
         if isinstance(el, DB.FilledRegion):
             frt = revit.doc.GetElement(el.GetTypeId())
             print('\n\n Filled Region Type: {}'
-                  .format(revit.ElementWrapper(frt).name))
+                  .format(revit.query.get_name(frt)))
             fre = revit.doc.GetElement(frt.FillPatternId)
             fp = fre.GetFillPattern()
             for fg in fp.GetFillGrids():
@@ -497,3 +497,28 @@ elif selected_switch == 'Sheets with Hidden Characters':
                             .format(sheet.SheetNumber,
                                     repr(sheetnum),
                                     sheetnum_repr))
+
+elif selected_switch == 'External Services':
+    BExtSer = DB.ExternalService.ExternalServices.BuiltInExternalServices
+    props = [x for x in dir(BExtSer) if 'Service' in x]
+    bisrvids = {x: getattr(BExtSer, x).Guid for x in props}
+    output.print_md('## Builtin Services')
+    for bisrv, bisrvid in bisrvids.items():
+        print('{} | {}'.format(bisrvid, bisrv))
+
+    output.print_md('## Registered External Services')
+    for esvc in DB.ExternalService.ExternalServiceRegistry.GetServices():
+        output.insert_divider()
+        output.print_md('{} | **{}**\n\n{} (by {}) (Builtin: {})'.format(
+            esvc.ServiceId.Guid,
+            esvc.Name,
+            esvc.Description,
+            esvc.VendorId,
+            esvc.ServiceId.Guid in bisrvids))
+        for sid in esvc.GetRegisteredServerIds():
+            server = esvc.GetServer(sid)
+            print('{} | {} ({}) (Builtin: {})'.format(
+                sid,
+                server.GetName(),
+                server.GetDescription(),
+                sid in bisrvids))

@@ -28,8 +28,11 @@ from System import Type
 from System import Uri, Guid
 from System import EventHandler
 from System import Array, IntPtr, Enum
+from System import Convert
+from System.Text import Encoding
 from System.Collections import IEnumerator, IEnumerable
 from System.Collections.Generic import List, Dictionary
+from System.Collections.Generic import IList, IDictionary
 from System import DateTime, DateTimeOffset
 
 from System import Diagnostics
@@ -71,16 +74,19 @@ from Microsoft.CSharp import CSharpCodeProvider
 clr.AddReference('IronPython.Wpf')
 import wpf
 
+try:
+    # clr.AddReference('Microsoft.WindowsAPICodePack')
+    clr.AddReference('Microsoft.WindowsAPICodePack.Shell')
+    import Microsoft.WindowsAPICodePack.Dialogs as CPDialogs
+except Exception:
+    CPDialogs = None
+
 
 from pyrevit import BIN_DIR
 
 
 def get_type(fw_object):
-    """Return CLR type of an object.
-
-    Args:
-        fw_object: Dotnet Framework Object Instance
-    """
+    """Return CLR type of an object."""
     return clr.GetClrType(fw_object)
 
 

@@ -22,6 +22,7 @@ from pyrevit.revit import report
 from pyrevit.revit import files
 from pyrevit.revit import serverutils
 from pyrevit.revit import geom
+from pyrevit.revit import units
 
 
 #pylint: disable=W0703,C0302,C0103
@@ -73,6 +74,8 @@ class RevitWrapper(types.ModuleType):
 
     @staticmethod
     def get_project_info():
+        mlogger.deprecate('Method revit.get_project_info() is deprecated. '
+                          'Use revit.query.get_project_info() instead.')
         return query.get_project_info()
 
 

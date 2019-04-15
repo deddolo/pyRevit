@@ -20,28 +20,28 @@ from pyrevit.framework import FormatterServices
 from pyrevit.framework import Array
 from pyrevit.coreutils import Timer
 from pyrevit.coreutils import envvars
-from pyrevit.coreutils.appdata import cleanup_appdata_folder
-from pyrevit.coreutils.logger import get_logger, get_stdout_hndlr, \
-                                     loggers_have_errors
-# import the basetypes first to get all the c-sharp code to compile
+from pyrevit.coreutils import appdata
+from pyrevit.coreutils import logger
 from pyrevit.loader import sessioninfo
-from pyrevit.loader.asmmaker import create_assembly, cleanup_assembly_files
+from pyrevit.loader import asmmaker
 from pyrevit.loader import uimaker
-from pyrevit.loader.basetypes import LOADER_BASE_NAMESPACE
-from pyrevit.coreutils import loadertypes
-from pyrevit import output
 from pyrevit.userconfig import user_config
 from pyrevit.extensions import COMMAND_AVAILABILITY_NAME_POSTFIX
-from pyrevit.extensions.extensionmgr import get_installed_ui_extensions
-from pyrevit.usagelog import setup_usage_logfile
+from pyrevit.extensions import extensionmgr
+from pyrevit import usagelog
 from pyrevit.versionmgr import updater
 from pyrevit.versionmgr import upgrade
+# import the basetypes first to get all the c-sharp code to compile
+from pyrevit.loader.basetypes import LOADER_BASE_NAMESPACE
+from pyrevit.coreutils import loadertypes
+# now load the rest of module that could depend on the compiled basetypes
+from pyrevit import output
 
 from pyrevit import DB, UI, revit
 
 
 #pylint: disable=W0703,C0302,C0103
-mlogger = get_logger(__name__)
+mlogger = logger.get_logger(__name__)
 
 
 AssembledExtension = namedtuple('AssembledExtension', ['ext', 'assm'])
@@ -62,6 +62,12 @@ def _clear_running_engines():
 def _setup_output():
     # create output window and assign handle
     out_window = loadertypes.ScriptOutput()
+    runtime_info = sessioninfo.get_runtime_info()
+    out_window.AppVersion = '{}:{}:{}'.format(
+        runtime_info.pyrevit_version,
+        runtime_info.engine_version,
+        runtime_info.host_version
+        )
 
     # create output stream and set stdout to it
     # we're not opening the output window here.
@@ -69,7 +75,7 @@ def _setup_output():
     outstr = loadertypes.ScriptOutputStream(out_window)
     sys.stdout = outstr
     # sys.stderr = outstr
-    stdout_hndlr = get_stdout_hndlr()
+    stdout_hndlr = logger.get_stdout_hndlr()
     stdout_hndlr.stream = outstr
 
     return out_window
@@ -77,7 +83,7 @@ def _setup_output():
 
 def _cleanup_output():
     sys.stdout = None
-    stdout_hndlr = get_stdout_hndlr()
+    stdout_hndlr = logger.get_stdout_hndlr()
     stdout_hndlr.stream = None
 
 
@@ -118,7 +124,7 @@ def _perform_onsessionload_ops():
 
     # asking usagelog module to setup the usage logging system
     # (active or not active)
-    setup_usage_logfile(uuid_str)
+    usagelog.setup_usage_logfile(uuid_str)
 
     # apply Upgrades
     upgrade.upgrade_existing_pyrevit()
@@ -126,14 +132,10 @@ def _perform_onsessionload_ops():
 
 def _perform_onsessionloadcomplete_ops():
     # cleanup old assembly files.
-    # asmmaker.cleanup_assembly_files() will take care of that
-    cleanup_assembly_files()
+    asmmaker.cleanup_assembly_files()
 
     # clean up temp app files between sessions.
-    cleanup_appdata_folder()
-
-    # setup auto output closer
-    # output.setup_output_closer()
+    appdata.cleanup_appdata_folder()
 
 
 def _new_session():
@@ -147,9 +149,13 @@ def _new_session():
 
     assembled_exts = []
     # get all installed ui extensions
-    for ui_ext in get_installed_ui_extensions():
+    for ui_ext in extensionmgr.get_installed_ui_extensions():
+        # configure extension components for metadata
+        # e.g. liquid templates like {{author}}
+        ui_ext.configure()
+
         # create a dll assembly and get assembly info
-        ext_asm_info = create_assembly(ui_ext)
+        ext_asm_info = asmmaker.create_assembly(ui_ext)
         if not ext_asm_info:
             mlogger.critical('Failed to create assembly for: %s', ui_ext)
             continue
@@ -160,17 +166,28 @@ def _new_session():
             AssembledExtension(ext=ui_ext, assm=ext_asm_info)
         )
 
-    # configure extension components for metadata
-    for assm_ext in assembled_exts:
-        assm_ext.ext.configure()
+    # add names of the created assemblies to the session info
+    sessioninfo.set_loaded_pyrevit_assemblies(
+        [x.assm.name for x in assembled_exts]
+    )
 
     # run startup scripts for this ui extension, if any
     for assm_ext in assembled_exts:
         if assm_ext.ext.startup_script:
+            # build syspaths for the startup script
+            sys_paths = [assm_ext.ext.directory]
+            if assm_ext.ext.library_path:
+                sys_paths.insert(0, assm_ext.ext.library_path)
+
             mlogger.info('Running startup tasks for %s', assm_ext.ext.name)
             mlogger.debug('Executing startup script for extension: %s',
                           assm_ext.ext.name)
-            execute_script(assm_ext.ext.startup_script)
+
+            # now run
+            execute_script(
+                assm_ext.ext.startup_script,
+                sys_paths=sys_paths
+                )
 
     # update/create ui (needs the assembly to link button actions
     # to commands saved in the dll)
@@ -182,11 +199,6 @@ def _new_session():
                                         default_value=False)
         )
         mlogger.info('UI created for extension: %s', assm_ext.ext.name)
-
-    # add names of the created assemblies to the session info
-    sessioninfo.set_loaded_pyrevit_assemblies(
-        [x.assm.name for x in assembled_exts]
-    )
 
     # re-sort the ui elements
     for assm_ext in assembled_exts:
@@ -209,6 +221,9 @@ def load_session():
     Returns:
         None
     """
+    # setup runtime environment variables
+    sessioninfo.setup_runtime_vars()
+
     # the loader dll addon, does not create an output window
     # if an output window is not provided, create one
     if EXEC_PARAMS.first_load:
@@ -237,7 +252,7 @@ def load_session():
     # if everything went well, self destruct
     try:
         timeout = user_config.core.startuplogtimeout
-        if timeout > 0 and not loggers_have_errors():
+        if timeout > 0 and not logger.loggers_have_errors():
             if EXEC_PARAMS.first_load:
                 # output_window is of type ScriptOutput
                 output_window.SelfDestructTimer(timeout)
@@ -479,7 +494,7 @@ def execute_command(pyrevitcmd_unique_id):
         execute_command_cls(cmd_class)
 
 
-def execute_script(script_path, arguments=None,
+def execute_script(script_path, arguments=None, sys_paths=None,
                    clean_engine=True, fullframe_engine=True):
     """Executes a script using pyRevit script executor.
 
@@ -496,8 +511,11 @@ def execute_script(script_path, arguments=None,
 
     executor = loadertypes.ScriptExecutor()
     script_name = op.basename(script_path)
-    sys_paths = DEFAULT_SEPARATOR.join([MAIN_LIB_DIR,
-                                        MISC_LIB_DIR])
+    core_syspaths = [MAIN_LIB_DIR, MISC_LIB_DIR]
+    if sys_paths:
+        sys_paths.extend(core_syspaths)
+    else:
+        sys_paths = core_syspaths
 
     cmd_runtime = \
         loadertypes.PyRevitCommandRuntime(
@@ -505,7 +523,7 @@ def execute_script(script_path, arguments=None,
             elements=None,
             scriptSource=script_path,
             alternateScriptSource=None,
-            syspaths=sys_paths,
+            syspaths=DEFAULT_SEPARATOR.join(sys_paths),
             arguments=arguments,
             helpSource=None,
             cmdName=script_name,

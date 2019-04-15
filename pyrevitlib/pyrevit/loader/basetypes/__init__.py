@@ -12,8 +12,9 @@ from pyrevit.coreutils import make_canonical_name, find_loaded_asm,\
 from pyrevit.coreutils.logger import get_logger
 from pyrevit.coreutils.dotnetcompiler import compile_csharp
 from pyrevit.coreutils import appdata
-
 from pyrevit.loader import ASSEMBLY_FILE_TYPE, HASH_CUTOFF_LENGTH
+
+from pyrevit.userconfig import user_config
 
 
 #pylint: disable=W0703,C0302,C0103
@@ -28,12 +29,14 @@ if not EXEC_PARAMS.doc_mode:
                              'Microsoft', 'Framework', '.NETFramework')
 
     try:
-        FRAMEWORK_DIRS = sorted(os.listdir(DOTNET_SDK_DIR), reverse=True)
+        DOTNET_TARGETPACK_DIRS = sorted(
+            [x for x in os.listdir(DOTNET_SDK_DIR)
+             if x.startswith('v4.') and 'X' not in x], reverse=True)
     except Exception as dotnet_sdk_err:
-        FRAMEWORK_DIRS = []
+        DOTNET_TARGETPACK_DIRS = []
         mlogger.debug('Dotnet SDK is not installed. | %s', dotnet_sdk_err)
 else:
-    INTERFACE_TYPES_DIR = DOTNET_SDK_DIR = FRAMEWORK_DIRS = None
+    INTERFACE_TYPES_DIR = DOTNET_SDK_DIR = DOTNET_TARGETPACK_DIRS = None
 
 
 # base classes for pyRevit commands --------------------------------------------
@@ -61,10 +64,21 @@ SOURCE_FILE_EXT = '.cs'
 SOURCE_FILE_FILTER = r'(\.cs)'
 
 if not EXEC_PARAMS.doc_mode:
+    # get and load the active Cpython engine
+    CPYTHON_ENGINE = user_config.get_active_cpython_engine()
+    CPYTHON_ENGINE_ASSM = CPYTHON_ENGINE.AssemblyPath
+    load_asm_file(CPYTHON_ENGINE_ASSM)
+
+    # create a hash for the loader assembly
+    # this hash is calculated based on:
+    # - basetypes csharp files
+    # - runtime engine version
+    # - cpython engine version
     BASE_TYPES_DIR_HASH = \
         get_str_hash(
             calculate_dir_hash(INTERFACE_TYPES_DIR, '', SOURCE_FILE_FILTER)
             + EXEC_PARAMS.engine_ver
+            + str(CPYTHON_ENGINE.Version)
             )[:HASH_CUTOFF_LENGTH]
     BASE_TYPES_ASM_FILE_ID = '{}_{}'\
         .format(BASE_TYPES_DIR_HASH, LOADER_BASE_NAMESPACE)
@@ -113,7 +127,7 @@ def _get_resource_file(resource_name):
 def _get_framework_module(fw_module):
     # start with the newest sdk folder and
     # work backwards trying to find the dll
-    for sdk_folder in FRAMEWORK_DIRS:
+    for sdk_folder in DOTNET_TARGETPACK_DIRS:
         fw_module_file = op.join(DOTNET_SDK_DIR,
                                  sdk_folder,
                                  make_canonical_name(fw_module,
@@ -132,16 +146,16 @@ def _get_reference_file(ref_name):
         load_asm_file(addin_file)
         return addin_file
 
-    # Then try to find the dll in windows SDK
-    if FRAMEWORK_DIRS:
-        fw_module_file = _get_framework_module(ref_name)
-        if fw_module_file:
-            return fw_module_file
-
     # Lastly try to find location of assembly if already loaded
     loaded_asm = find_loaded_asm(ref_name)
     if loaded_asm:
         return loaded_asm[0].Location
+
+    # Then try to find the dll in windows SDK
+    if DOTNET_TARGETPACK_DIRS:
+        fw_module_file = _get_framework_module(ref_name)
+        if fw_module_file:
+            return fw_module_file
 
     # if not worked raise critical error
     mlogger.critical('Can not find required reference assembly: %s',
@@ -161,7 +175,13 @@ def _get_references():
                 'pyRevitLabs.Common', 'pyRevitLabs.CommonWPF',
                 'MahApps.Metro']
 
-    return [_get_reference_file(ref_name) for ref_name in ref_list]
+    refs = [_get_reference_file(ref_name) for ref_name in ref_list]
+
+    # add cpython engine dll to references
+    # _get_reference_file('engines/372/Python.Runtime')
+    refs.append(CPYTHON_ENGINE_ASSM)
+
+    return refs
 
 
 def _generate_base_classes_asm():

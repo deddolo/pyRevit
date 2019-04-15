@@ -9,6 +9,7 @@ if not EXEC_PARAMS.doc_mode:
     from pyrevit.coreutils import ribbon
 
 #pylint: disable=W0703,C0302,C0103,C0413
+from pyrevit.extensions import components
 from pyrevit.extensions import TAB_POSTFIX, PANEL_POSTFIX,\
     STACKTWO_BUTTON_POSTFIX, STACKTHREE_BUTTON_POSTFIX, \
     PULLDOWN_BUTTON_POSTFIX, SPLIT_BUTTON_POSTFIX, SPLITPUSH_BUTTON_POSTFIX, \
@@ -24,10 +25,10 @@ CONFIG_SCRIPT_TITLE_POSTFIX = u'\u25CF'
 
 
 class UIMakerParams:
-    def __init__(self, par_ui, par_cmp, cmp, asm_info, create_beta=False):
+    def __init__(self, par_ui, par_cmp, cmp_item, asm_info, create_beta=False):
         self.parent_ui = par_ui
         self.parent_cmp = par_cmp
-        self.component = cmp
+        self.component = cmp_item
         self.asm_info = asm_info
         self.create_beta_cmds = create_beta
 
@@ -340,10 +341,10 @@ def _produce_ui_pulldown(ui_maker_params):
 
     mlogger.debug('Producing pulldown button: %s', pulldown)
     try:
-        parent_ribbon_panel.create_pulldown_button(pulldown.name,
+        parent_ribbon_panel.create_pulldown_button(pulldown.ui_title,
                                                    pulldown.icon_file,
                                                    update_if_exists=True)
-        return parent_ribbon_panel.ribbon_item(pulldown.name)
+        return parent_ribbon_panel.ribbon_item(pulldown.ui_title)
     except PyRevitException as err:
         mlogger.error('UI error: %s', err.msg)
         return None
@@ -360,10 +361,10 @@ def _produce_ui_split(ui_maker_params):
 
     mlogger.debug('Producing split button: %s}', split)
     try:
-        parent_ribbon_panel.create_split_button(split.name,
+        parent_ribbon_panel.create_split_button(split.ui_title,
                                                 split.icon_file,
                                                 update_if_exists=True)
-        return parent_ribbon_panel.ribbon_item(split.name)
+        return parent_ribbon_panel.ribbon_item(split.ui_title)
     except PyRevitException as err:
         mlogger.error('UI error: %s', err.msg)
         return None
@@ -380,10 +381,10 @@ def _produce_ui_splitpush(ui_maker_params):
 
     mlogger.debug('Producing splitpush button: %s', splitpush)
     try:
-        parent_ribbon_panel.create_splitpush_button(splitpush.name,
+        parent_ribbon_panel.create_splitpush_button(splitpush.ui_title,
                                                     splitpush.icon_file,
                                                     update_if_exists=True)
-        return parent_ribbon_panel.ribbon_item(splitpush.name)
+        return parent_ribbon_panel.ribbon_item(splitpush.ui_title)
     except PyRevitException as err:
         mlogger.error('UI error: %s', err.msg)
         return None
@@ -433,6 +434,7 @@ def _produce_ui_stacks(ui_maker_params):
         try:
             parent_ui_panel.close_stack()
             mlogger.debug('Closed stack: %s', stack_cmp.name)
+            return stack_cmp
         except PyRevitException as err:
             mlogger.error('Error creating stack | %s', err)
 
@@ -537,6 +539,7 @@ _component_creation_dict = {
 
 
 def _recursively_produce_ui_items(ui_maker_params):
+    cmp_count = 0
     for sub_cmp in ui_maker_params.component:
         ui_item = None
         try:
@@ -549,6 +552,8 @@ def _recursively_produce_ui_items(ui_maker_params):
                               sub_cmp,
                               ui_maker_params.asm_info,
                               ui_maker_params.create_beta_cmds))
+            if ui_item:
+                cmp_count += 1
         except KeyError:
             mlogger.debug('Can not find create function for: %s', sub_cmp)
         except Exception as create_err:
@@ -556,13 +561,21 @@ def _recursively_produce_ui_items(ui_maker_params):
 
         mlogger.debug('UI item created by create func is: %s', ui_item)
 
-        if ui_item and sub_cmp.is_container:
-            _recursively_produce_ui_items(
+        if ui_item \
+                and not isinstance(ui_item, components.GenericStack) \
+                and sub_cmp.is_container:
+            subcmp_count = _recursively_produce_ui_items(
                 UIMakerParams(ui_item,
                               ui_maker_params.component,
                               sub_cmp,
                               ui_maker_params.asm_info,
                               ui_maker_params.create_beta_cmds))
+
+            # if component does not have any sub components hide it
+            if subcmp_count == 0:
+                ui_item.deactivate()
+
+    return cmp_count
 
 
 if not EXEC_PARAMS.doc_mode:
@@ -575,11 +588,14 @@ def update_pyrevit_ui(ui_ext, ext_asm_info, create_beta=False):
     provided assembly dll address.
     """
     mlogger.debug('Creating/Updating ui for extension: %s', ui_ext)
-    _recursively_produce_ui_items(
+    cmp_count = _recursively_produce_ui_items(
         UIMakerParams(current_ui, None, ui_ext, ext_asm_info, create_beta))
+    mlogger.debug('%s components were created for: %s', cmp_count, ui_ext)
 
 
 def sort_pyrevit_ui(ui_ext):
+    # only works on panels so far
+    # re-ordering of ui components deeper than panels have not been implemented
     layout_directives = []
     for item in ui_ext:
         layout_directives.extend(item.get_layout_directives())
@@ -601,6 +617,9 @@ def sort_pyrevit_ui(ui_ext):
 
 
 def cleanup_pyrevit_ui():
+    # hide all items that were not touched after a reload
+    # meaning they have been removed in extension folder structure
+    # and thus are not updated
     untouched_items = current_ui.get_unchanged_items()
     for item in untouched_items:
         if not item.is_native():

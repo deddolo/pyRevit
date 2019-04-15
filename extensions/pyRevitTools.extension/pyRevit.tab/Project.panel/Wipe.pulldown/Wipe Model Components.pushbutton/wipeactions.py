@@ -96,6 +96,19 @@ def call_purge():
 def remove_all_constraints():
     """Remove All Constraints"""
 
+    cl = DB.FilteredElementCollector(revit.doc)
+    consts = list(cl.OfCategory(DB.BuiltInCategory.OST_Constraints)
+                    .WhereElementIsNotElementType()
+                    .ToElements())
+
+    print_header('REMOVING ALL CONSTRAINTS')
+    remove_action('Remove All Constraints', 'Constraint', consts)
+
+
+@dependent
+def remove_all_viewspecific_constraints():
+    """Remove All View-Specific Constraints"""
+
     def confirm_removal(cnst):
         return cnst.View is not None
 
@@ -104,8 +117,8 @@ def remove_all_constraints():
                     .WhereElementIsNotElementType()
                     .ToElements())
 
-    print_header('REMOVING ALL CONSTRAINTS')
-    remove_action('Remove All Constraints',
+    print_header('REMOVING ALL VIEW-SPECIFIC CONSTRAINTS')
+    remove_action('Remove All View-Specific Constraints',
                   'Constraint',
                   consts, validity_func=confirm_removal)
 
@@ -277,6 +290,23 @@ def remove_all_reference_planes():
 
 
 @notdependent
+def remove_all_unnamed_reference_planes():
+    """Remove All Reference Planes (Unnamed Only)"""
+
+    cl = DB.FilteredElementCollector(revit.doc)
+    refplanes = cl.OfCategory(DB.BuiltInCategory.OST_CLines)\
+                  .WhereElementIsNotElementType()\
+                  .ToElements()
+    unnamed_refplanes = [
+        x for x in refplanes
+        if not x.Parameter[DB.BuiltInParameter.DATUM_TEXT].AsString()
+        ]
+    print_header('REMOVING REFERENCE PLANES')
+    remove_action('Remove All Reference Planes', 'Reference Plane',
+                  unnamed_refplanes)
+
+
+@notdependent
 def remove_all_materials():
     """Remove All Materials"""
 
@@ -371,7 +401,7 @@ def _purge_all_views(viewclass_to_purge, viewtype_to_purge,
                 and refviewport \
                 and refsheet.AsString() != '' \
                 and refviewport.AsString() != '' \
-                or (refprefix + v.ViewName) in view_refs_names:
+                or (refprefix + revit.query.get_name(v)) in view_refs_names:
             return True
 
     def confirm_removal(v):
@@ -382,9 +412,10 @@ def _purge_all_views(viewclass_to_purge, viewtype_to_purge,
                 return False
             elif v.IsTemplate:
                 return False
-            elif DB.ViewType.ThreeD == v.ViewType and '{3D}' == v.ViewName:
+            elif DB.ViewType.ThreeD == v.ViewType \
+                    and '{3D}' == revit.query.get_name(v):
                 return False
-            elif '<' in v.ViewName:
+            elif '<' in revit.query.get_name(v):
                 return False
             elif v.Id.IntegerValue in open_views:
                 return False
@@ -609,7 +640,7 @@ def remove_all_schedules():
                 return False
             elif v.IsTemplate:
                 return False
-            elif '<' in v.ViewName:
+            elif '<' in revit.query.get_name(v):
                 return False
             elif v.Id.IntegerValue in open_views:
                 return False
@@ -647,7 +678,7 @@ def remove_all_legends():
                 return False
             elif v.IsTemplate:
                 return False
-            elif '<' in v.ViewName:
+            elif '<' in revit.query.get_name(v):
                 return False
             elif v.Id.IntegerValue in open_views:
                 return False
